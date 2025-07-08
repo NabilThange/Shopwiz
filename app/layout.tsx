@@ -10,7 +10,7 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "ShopWhiz - AI-Powered Shopping Assistant",
   description: "Find the best products across multiple platforms with AI assistance",
-    generator: 'v0.dev'
+    generator: 'Hackspec'
 }
 
 export default function RootLayout({

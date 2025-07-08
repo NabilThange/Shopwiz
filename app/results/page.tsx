@@ -54,26 +54,76 @@ export default function ResultsPage() {
 
   // Memoize search parameters to prevent infinite re-renders
   const searchConfig = useMemo(() => {
-    const query = searchParams.get("q") || ""
-    const selectedPlatforms = searchParams.get("platforms")?.split(",").filter(Boolean) || []
-    const minPrice = Number.parseInt(searchParams.get("minPrice") || "0")
-    const maxPrice = Number.parseInt(searchParams.get("maxPrice") || "10000")
-    const category = searchParams.get("category") || ""
+    // Handle both old and new parameter formats
+    const query = searchParams.get("query") || searchParams.get("q") || ""
+    
+    // Handle multiple platform parameters (case insensitive)
+    const platformParams = searchParams.getAll("platform")
+    const platformsParam = searchParams.get("platforms")
+    
+    let selectedPlatforms: string[] = []
+    if (platformParams.length > 0) {
+      selectedPlatforms = platformParams.map(p => p.toLowerCase())
+    } else if (platformsParam) {
+      selectedPlatforms = platformsParam.split(",").map(p => p.toLowerCase()).filter(Boolean)
+    } else {
+      selectedPlatforms = ['amazon', 'flipkart', 'myntra', 'ajio']
+    }
 
-    return {
-      query,
-      selectedPlatforms: selectedPlatforms.length > 0 
-        ? selectedPlatforms 
-        : ['amazon', 'flipkart', 'myntra', 'ajio'],
+    // Handle both old and new price parameter formats
+    const minPrice = Number.parseInt(
+      searchParams.get("priceRangeMin") || 
+      searchParams.get("minPrice") || 
+      "0"
+    )
+    const maxPrice = Number.parseInt(
+      searchParams.get("priceRangeMax") || 
+      searchParams.get("maxPrice") || 
+      "100000"
+    )
+    
+    const category = searchParams.get("category") || ""
+    const brand = searchParams.get("brand") || ""
+    const ram = searchParams.get("ram") || ""
+    const storage = searchParams.get("storage") || ""
+
+    // Build enhanced query with filters
+    let enhancedQuery = query
+    if (brand) enhancedQuery += ` ${brand}`
+    if (category) enhancedQuery += ` ${category}`
+    if (ram) enhancedQuery += ` ${ram}`
+    if (storage) enhancedQuery += ` ${storage}`
+
+    console.log('🔍 Search Config:', {
+      originalQuery: query,
+      enhancedQuery,
+      selectedPlatforms,
       minPrice,
       maxPrice,
       category,
+      brand,
+      ram,
+      storage
+    })
+
+    return {
+      query: enhancedQuery.trim(),
+      selectedPlatforms,
+      minPrice,
+      maxPrice,
+      category,
+      brand,
+      ram,
+      storage
     }
   }, [searchParams])
 
   // Real Tavily API search
   useEffect(() => {
-    if (!searchConfig.query) return
+    if (!searchConfig.query) {
+      console.log('❌ No query provided')
+      return
+    }
 
     const fetchSearchResults = async () => {
       try {
@@ -81,37 +131,116 @@ export default function ResultsPage() {
         setSearchCompleted(false)
         setProducts([])
 
-        const searchPromises = searchConfig.selectedPlatforms.map(platform => 
-          fetch('/api/search/tavily', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              query: searchConfig.query,
-              platform: platform
+        console.log('🚀 Starting search for:', searchConfig.query)
+        console.log('🎯 On platforms:', searchConfig.selectedPlatforms)
+
+        const searchPromises = searchConfig.selectedPlatforms.map(async (platform) => {
+          try {
+            console.log(`📡 Calling Tavily API for ${platform}...`)
+            
+            const response = await fetch('/api/search/tavily', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                query: searchConfig.query,
+                platform: platform,
+                category: searchConfig.category
+              })
             })
-          }).then(res => res.json())
-        )
+            
+            if (!response.ok) {
+              console.error(`❌ Search failed for ${platform}:`, response.status, response.statusText)
+              return { results: [], platform, error: `HTTP ${response.status}` }
+            }
+            
+            const data = await response.json()
+            console.log(`✅ Results from ${platform}:`, data.results?.length || 0, 'products')
+            
+            return { 
+              results: data.results || [], 
+              platform,
+              success: data.success 
+            }
+          } catch (error: unknown) {
+            const errorMessage = error instanceof Error 
+              ? error.message 
+              : typeof error === 'string' 
+                ? error 
+                : `Unknown error in ${platform} search`;
+            
+            console.error(`💥 Error searching ${platform}:`, errorMessage)
+            return { 
+              results: [], 
+              platform, 
+              error: errorMessage 
+            }
+          }
+        })
 
         const results = await Promise.all(searchPromises)
+        console.log('📊 All search results:', results)
+        
+        // Combine all results
         const allProducts = results
-          .flatMap(result => result.results || [])
+          .flatMap(result => {
+            if (!result.results || result.results.length === 0) {
+              console.log(`⚠️ No results from ${result.platform}`)
+              return []
+            }
+            return result.results
+          })
           .filter(product => {
-            const price = Number.parseInt(product.price.replace(/[₹,]/g, ""))
+            // Price filtering
+            if (!product.price || product.price === "Price not available") {
+              return true // Include products without price for now
+            }
+            
+            const priceStr = product.price.replace(/[₹,]/g, "")
+            const price = Number.parseInt(priceStr)
+            
+            if (isNaN(price)) {
+              return true // Include if price can't be parsed
+            }
+            
             return price >= searchConfig.minPrice && price <= searchConfig.maxPrice
           })
+        
+        console.log('🎯 Final filtered products:', allProducts.length)
+        console.log('🔍 Sample products:', allProducts.slice(0, 2))
         
         setProducts(allProducts)
         setSearchCompleted(true)
         setLoading(false)
-      } catch (error) {
-        console.error('Search failed:', error)
+        
+        // Show success message
+        if (allProducts.length > 0) {
+          console.log(`🎉 Search successful! Found ${allProducts.length} products`)
+        } else {
+          console.log('😞 No products found after filtering')
+        }
+        
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error 
+          ? error.message 
+          : typeof error === 'string' 
+            ? error 
+            : 'Unknown error';
+        
+        console.error('💥 Search completely failed:', errorMessage)
         setLoading(false)
         setSearchCompleted(true)
+        setProducts([])
       }
     }
 
     fetchSearchResults()
-  }, [searchConfig.query, searchConfig.selectedPlatforms.join(","), searchConfig.minPrice, searchConfig.maxPrice])
+  }, [
+    searchConfig.query, 
+    searchConfig.selectedPlatforms.join(","), 
+    searchConfig.minPrice, 
+    searchConfig.maxPrice, 
+    searchConfig.category
+  ])
 
   // Sort products based on selected option
   const sortedProducts = useMemo(() => {
